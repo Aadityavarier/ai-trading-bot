@@ -1,2 +1,12 @@
-__pycache__/
 trading_bot.log
+# Python
+__pycache__/
+venv/
+*.pyc
+
+# Log files
+*.log
+
+# IDE / Editor specific
+.vscode/
+.idea/
