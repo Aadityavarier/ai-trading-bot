@@ -1,0 +1,22 @@
+{
+    "primary_ticker": "TATASTEEL.NS",
+    "lookback_days": 60,
+    "data_columns": [
+        "CL=F",
+        "INR=X",
+        "TATASTEEL.NS",
+        "^GSPC",
+        "^NSEI",
+        "TATASTEEL.NS_RSI",
+        "TATASTEEL.NS_MACD",
+        "TATASTEEL.NS_MACD_h",
+        "TATASTEEL.NS_MACD_s",
+        "TATASTEEL.NS_BB_l",
+        "TATASTEEL.NS_BB_m",
+        "TATASTEEL.NS_BB_u",
+        "TATASTEEL.NS_BB_b",
+        "TATASTEEL.NS_BB_p",
+        "TATASTEEL.NS_OBV"
+    ],
+    "last_updated": "2025-07-27T22:09:53.614421"
+}
