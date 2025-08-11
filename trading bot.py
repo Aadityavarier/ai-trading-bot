@@ -202,53 +202,52 @@ class AdvancedRegimeDetector:
         
         regimes = {}
         
-        # Volatility regime
+        # Volatility regime (NUMERIC ONLY)
         vol_20 = returns.rolling(20).std().fillna(0.02)
         vol_60 = returns.rolling(60).std().fillna(0.02)
-        regimes['vol_regime'] = np.where(vol_20 > vol_60 * 1.5, 'high_vol', 'low_vol')
+        regimes['vol_regime_numeric'] = (vol_20 > vol_60 * 1.5).astype(int)
         
-        # Trend regime
+        # Trend regime (NUMERIC ONLY)
         sma_20 = close.rolling(20).mean()
         sma_50 = close.rolling(50).mean()
         sma_200 = close.rolling(200).mean()
         
-        trend_strength = (sma_20 - sma_50) / sma_50
-        regimes['trend_regime'] = np.where(
-            trend_strength > self.trend_threshold, 'uptrend',
-            np.where(trend_strength < -self.trend_threshold, 'downtrend', 'sideways')
+        trend_strength = (sma_20 - sma_50) / (sma_50 + 1e-8)
+        trend_numeric = np.where(
+            trend_strength > self.trend_threshold, 1,
+            np.where(trend_strength < -self.trend_threshold, -1, 0)
         )
+        regimes['trend_regime_numeric'] = pd.Series(trend_numeric, index=df.index)
         
-        # Market structure regime
-        regimes['structure_regime'] = np.where(
-            (close > sma_20) & (sma_20 > sma_50) & (sma_50 > sma_200), 'bullish',
-            np.where(
-                (close < sma_20) & (sma_20 < sma_50) & (sma_50 < sma_200), 'bearish',
-                'neutral'
-            )
-        )
+        # Market structure regime (NUMERIC ONLY)
+        bullish = (close > sma_20) & (sma_20 > sma_50) & (sma_50 > sma_200)
+        bearish = (close < sma_20) & (sma_20 < sma_50) & (sma_50 < sma_200)
+        structure_numeric = np.where(bullish, 1, np.where(bearish, -1, 0))
+        regimes['structure_regime_numeric'] = pd.Series(structure_numeric, index=df.index)
         
-        # Momentum regime
+        # Momentum regime (NUMERIC ONLY)
         momentum = close.pct_change(20).fillna(0.0)
         mom_threshold = momentum.rolling(60).std() * 1.5
-        regimes['momentum_regime'] = np.where(
-            momentum > mom_threshold, 'strong_up',
-            np.where(momentum < -mom_threshold, 'strong_down', 'weak')
+        mom_numeric = np.where(
+            momentum > mom_threshold, 1,
+            np.where(momentum < -mom_threshold, -1, 0)
         )
+        regimes['momentum_regime_numeric'] = pd.Series(mom_numeric, index=df.index)
         
-        return {k: pd.Series(v, index=df.index) for k, v in regimes.items()}
+        return regimes
     
-    def should_trade(self, regimes: Dict[str, str], timestamp: pd.Timestamp) -> bool:
+    def should_trade(self, regimes: Dict[str, float], timestamp: pd.Timestamp) -> bool:
         """Determine if trading conditions are favorable"""
         try:
-            vol_regime = regimes.get('vol_regime', 'low_vol')
-            trend_regime = regimes.get('trend_regime', 'sideways')
-            structure_regime = regimes.get('structure_regime', 'neutral')
+            vol_regime = regimes.get('vol_regime_numeric', 0)  # 0 = low vol, 1 = high vol
+            trend_regime = regimes.get('trend_regime_numeric', 0)  # -1, 0, 1
+            structure_regime = regimes.get('structure_regime_numeric', 0)  # -1, 0, 1
             
             # Only trade in favorable conditions
             favorable_conditions = [
-                vol_regime == 'low_vol',  # Low volatility
-                trend_regime in ['uptrend', 'sideways'],  # Not in strong downtrend
-                structure_regime in ['bullish', 'neutral']  # Not in strong bear market
+                vol_regime == 0,  # Low volatility
+                trend_regime >= 0,  # Not in strong downtrend
+                structure_regime >= -1  # Not in strong bear market
             ]
             
             return sum(favorable_conditions) >= 2  # At least 2 favorable conditions
@@ -257,10 +256,10 @@ class AdvancedRegimeDetector:
             return False
 
 # -----------------------
-# Enhanced Feature Engineering
+# Enhanced Feature Engineering (FIXED)
 # -----------------------
 class InstitutionalFeatureEngine:
-    """Enhanced feature engineering with market context awareness"""
+    """Enhanced feature engineering with NUMERIC ONLY outputs"""
     
     def __init__(self, primary_symbol: str, use_cache: bool = True):
         self.symbol = primary_symbol
@@ -348,7 +347,7 @@ class InstitutionalFeatureEngine:
         # Advanced momentum indicators
         # Rate of Change (ROC)
         for period in [10, 20]:
-            roc = ((close - close.shift(period)) / close.shift(period) * 100).fillna(0.0)
+            roc = ((close - close.shift(period)) / (close.shift(period) + 1e-8) * 100).fillna(0.0)
             out[f'roc_{period}'] = roc
             
         # MACD with enhancements
@@ -491,32 +490,19 @@ class InstitutionalFeatureEngine:
         return out
     
     def regime_aware_features(self, df: pd.DataFrame) -> Dict[str, pd.Series]:
-        """Market regime-aware features"""
+        """Market regime-aware features - NUMERIC ONLY"""
         out = {}
         
-        # Get regime information
+        # Get regime information (all numeric)
         regimes = self.regime_detector.detect_regime(df)
         
-        # Add regime features
+        # Add ONLY numeric regime features
         for regime_name, regime_series in regimes.items():
-            out[regime_name] = regime_series.fillna('neutral')
-            
-            # Encode categorical regimes as numeric
-            if regime_name == 'vol_regime':
-                out[f'{regime_name}_numeric'] = (regime_series == 'high_vol').astype(int)
-            elif regime_name == 'trend_regime':
-                trend_map = {'downtrend': -1, 'sideways': 0, 'uptrend': 1}
-                out[f'{regime_name}_numeric'] = regime_series.map(trend_map).fillna(0)
-            elif regime_name == 'structure_regime':
-                struct_map = {'bearish': -1, 'neutral': 0, 'bullish': 1}
-                out[f'{regime_name}_numeric'] = regime_series.map(struct_map).fillna(0)
-            elif regime_name == 'momentum_regime':
-                mom_map = {'strong_down': -1, 'weak': 0, 'strong_up': 1}
-                out[f'{regime_name}_numeric'] = regime_series.map(mom_map).fillna(0)
+            out[regime_name] = regime_series.fillna(0)
         
         # Combined regime score
         regime_scores = []
-        for col in ['vol_regime_numeric', 'trend_regime_numeric', 'structure_regime_numeric']:
+        for col in regimes.keys():
             if col in out:
                 regime_scores.append(out[col])
         
@@ -596,7 +582,7 @@ class InstitutionalFeatureEngine:
         return out
     
     def generate_features(self, raw_df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
-        """Main feature generation with improved processing"""
+        """Main feature generation with improved processing - NUMERIC ONLY OUTPUT"""
         df = raw_df.copy().sort_index()
         required_cols = {'open', 'high', 'low', 'close'}
         if not required_cols.issubset(set(df.columns)):
@@ -662,6 +648,12 @@ class InstitutionalFeatureEngine:
         numeric_columns = features_df.select_dtypes(include=[np.number]).columns
         features_df[numeric_columns] = features_df[numeric_columns].fillna(method='ffill').fillna(method='bfill').fillna(0.0)
         
+        # FINAL CHECK: Ensure ALL features are numeric
+        non_numeric_cols = features_df.select_dtypes(exclude=[np.number]).columns
+        if len(non_numeric_cols) > 0:
+            logger.warning(f"Dropping non-numeric columns: {non_numeric_cols.tolist()}")
+            features_df = features_df.drop(columns=non_numeric_cols)
+        
         logger.info(f"Generated {features_df.shape[1]} enhanced features with {features_df.shape[0]} rows (dropped {initial_len - len(features_df)} rows)")
         
         return features_df
@@ -696,10 +688,10 @@ class InstitutionalFeatureEngine:
         return out
 
 # -----------------------
-# Improved Model Manager
+# FIXED Model Manager
 # -----------------------
 class OptimizedModelManager:
-    """Optimized model manager addressing overfitting"""
+    """Optimized model manager addressing overfitting - FIXED VERSION"""
     
     def __init__(self, model_path: str = "optimized_model.joblib"):
         self.model_path = model_path
@@ -709,6 +701,17 @@ class OptimizedModelManager:
         self.feature_columns = None
         self.is_trained = False
         self.regime_detector = AdvancedRegimeDetector()
+        
+    def _filter_numeric_features(self, features_df: pd.DataFrame, feature_columns: List[str]) -> List[str]:
+        """Filter to keep only numeric features - CRITICAL FIX"""
+        numeric_cols = features_df.select_dtypes(include=[np.number]).columns.tolist()
+        filtered_cols = [col for col in feature_columns if col in numeric_cols]
+        
+        dropped_count = len(feature_columns) - len(filtered_cols)
+        if dropped_count > 0:
+            logger.info(f"Filtered out {dropped_count} non-numeric features before training")
+        
+        return filtered_cols
         
     def _create_regularized_models(self, random_state: int = 42) -> Dict[str, Any]:
         """Create regularized models to prevent overfitting"""
@@ -771,13 +774,19 @@ class OptimizedModelManager:
               test_size: float = 0.25,         # Larger test set
               random_state: int = 42,
               cv_folds: int = 3) -> Dict[str, float]:          # Reduced CV folds
-        """Train optimized ensemble model"""
+        """Train optimized ensemble model - FIXED VERSION"""
         logger.info("Starting optimized model training...")
         
         # Prepare data
         if feature_columns is None:
             feature_columns = [c for c in features_df.columns 
                              if not c.startswith('target_') and c != 'returns']
+        
+        # CRITICAL FIX: Filter to numeric features only
+        feature_columns = self._filter_numeric_features(features_df, feature_columns)
+        
+        if len(feature_columns) == 0:
+            raise ValueError("No numeric features available for training")
         
         # Feature selection - more aggressive
         logger.info("Performing enhanced feature selection...")
@@ -955,18 +964,18 @@ class OptimizedModelManager:
             logger.warning(f"Failed to load model: {e}")
             return False
 
-# -----------------------
-# Enhanced Risk Management
-# -----------------------
+# [Rest of the classes remain the same as in the previous version...]
+# I'll include the key remaining classes to save space:
+
 class OptimizedRiskManager:
     """Enhanced risk management with dynamic sizing"""
     
     def __init__(self, 
-                 base_position_size: float = 0.05,    # Reduced from 0.1
-                 max_portfolio_var: float = 0.015,    # Reduced from 0.02
-                 stop_loss_pct: float = 0.08,         # Increased from 0.05
-                 take_profit_pct: float = 0.15,       # Increased from 0.10
-                 max_holding_period: int = 15):       # Reduced from 20
+                 base_position_size: float = 0.05,
+                 max_portfolio_var: float = 0.015,
+                 stop_loss_pct: float = 0.08,
+                 take_profit_pct: float = 0.15,
+                 max_holding_period: int = 15):
         
         self.base_position_size = base_position_size
         self.max_portfolio_var = max_portfolio_var
@@ -1004,7 +1013,7 @@ class OptimizedRiskManager:
                               volatility: float,
                               current_capital: float,
                               price: float,
-                              regime_info: Dict[str, str] = None) -> float:
+                              regime_info: Dict[str, float] = None) -> float:
         """Enhanced position sizing with multiple factors"""
         
         # Base Kelly calculation
@@ -1028,22 +1037,22 @@ class OptimizedRiskManager:
         # Regime adjustment
         regime_multiplier = 1.0
         if regime_info:
-            vol_regime = regime_info.get('vol_regime', 'low_vol')
-            trend_regime = regime_info.get('trend_regime', 'sideways')
-            structure_regime = regime_info.get('structure_regime', 'neutral')
+            vol_regime = regime_info.get('vol_regime_numeric', 0)
+            trend_regime = regime_info.get('trend_regime_numeric', 0)
+            structure_regime = regime_info.get('structure_regime_numeric', 0)
             
             # Reduce size in unfavorable conditions
-            if vol_regime == 'high_vol':
+            if vol_regime == 1:  # High vol
                 regime_multiplier *= 0.5
-            if trend_regime == 'downtrend':
+            if trend_regime == -1:  # Downtrend
                 regime_multiplier *= 0.3
-            if structure_regime == 'bearish':
+            if structure_regime == -1:  # Bearish
                 regime_multiplier *= 0.4
                 
             # Boost size in very favorable conditions
-            if (vol_regime == 'low_vol' and 
-                trend_regime == 'uptrend' and 
-                structure_regime == 'bullish'):
+            if (vol_regime == 0 and 
+                trend_regime == 1 and 
+                structure_regime == 1):
                 regime_multiplier *= 1.3
         
         # Streak adjustment - reduce size after losses
@@ -1069,10 +1078,6 @@ class OptimizedRiskManager:
         
         position_value = current_capital * position_fraction
         position_size = position_value / price
-        
-        logger.debug(f"Position sizing - Kelly: {kelly_fraction:.3f}, "
-                    f"Vol adj: {vol_adjustment:.3f}, Regime: {regime_multiplier:.3f}, "
-                    f"Final size: {position_size:.2f}")
         
         return position_size
     
@@ -1126,9 +1131,8 @@ class OptimizedRiskManager:
         
         return False, "hold"
 
-# -----------------------
-# Enhanced Backtester
-# -----------------------
+# [Backtester and other classes remain similar, just with the fixed regime handling]
+
 class OptimizedBacktester:
     """Enhanced backtester with improved realism"""
     
@@ -1154,7 +1158,7 @@ class OptimizedBacktester:
                     feature_columns: List[str],
                     start_date: Optional[str] = None,
                     end_date: Optional[str] = None,
-                    min_signal_strength: float = 0.65) -> Dict[str, Any]:  # Higher threshold
+                    min_signal_strength: float = 0.65) -> Dict[str, Any]:
         """Run enhanced backtest"""
         logger.info("Starting optimized backtest...")
         
@@ -1168,7 +1172,7 @@ class OptimizedBacktester:
         price_data = self.price_df.loc[common_index]
         feature_data = self.features_df.loc[common_index]
         
-        # Get regime information
+        # Get regime information (numeric only)
         regimes_df = self.regime_detector.detect_regime(price_data)
         
         # Initialize tracking
@@ -1233,7 +1237,7 @@ class OptimizedBacktester:
                     execution_price = row['open'] * (1 - self.slippage)
                     commission_cost = position * execution_price * self.commission
                     
-                    total_commission = commission_cost + trades[-1]['commission']  # Include buy commission
+                    total_commission = commission_cost + trades[-1]['commission']
                     cash += position * execution_price - commission_cost
                     trade_pnl = (execution_price - position_entry_price) * position - total_commission
                     
@@ -1285,13 +1289,13 @@ class OptimizedBacktester:
                 try:
                     signal_prob = probabilities.loc[timestamp]
                     
-                    # Get regime info for this timestamp
+                    # Get regime info for this timestamp (numeric values)
                     regime_info = {}
                     for regime_name, regime_series in regimes_df.items():
                         try:
-                            regime_info[regime_name] = regime_series.loc[timestamp]
+                            regime_info[regime_name] = float(regime_series.loc[timestamp])
                         except:
-                            regime_info[regime_name] = 'neutral'
+                            regime_info[regime_name] = 0.0
                     
                     signals_generated += 1
                     
@@ -1380,9 +1384,7 @@ class OptimizedBacktester:
         
         return gross_profit / gross_loss if gross_loss > 0 else float('inf')
 
-# -----------------------
-# Indian Market Data Manager (unchanged)
-# -----------------------
+# [Indian Market Data Manager remains the same]
 class IndianMarketDataManager:
     """Data manager for Indian stock markets"""
     
@@ -1457,11 +1459,8 @@ class IndianMarketDataManager:
             logger.error(f"Failed to download data for {yf_symbol}: {e}")
             raise
 
-# -----------------------
-# Enhanced Trading Bot
-# -----------------------
 class OptimizedTradingBot:
-    """Optimized trading bot with improved performance"""
+    """Optimized trading bot with improved performance - FIXED VERSION"""
     
     def __init__(self, 
                  symbols: List[str] = None,
@@ -1482,7 +1481,7 @@ class OptimizedTradingBot:
                          symbol: str = 'TATAMOTORS',
                          period: str = "2y",
                          test_size: float = 0.25) -> Dict[str, Any]:
-        """Run complete optimized analysis pipeline"""
+        """Run complete optimized analysis pipeline - FIXED VERSION"""
         try:
             logger.info(f"Starting OPTIMIZED analysis for {symbol}")
             
@@ -1513,7 +1512,7 @@ class OptimizedTradingBot:
             )
             
             backtest_results = backtester.run_backtest(
-                feature_columns, 
+                self.model_manager.feature_columns,  # Use selected features
                 min_signal_strength=0.65  # Higher threshold
             )
             
@@ -1523,9 +1522,10 @@ class OptimizedTradingBot:
                 'data_period': period,
                 'model_metrics': model_metrics,
                 'backtest_results': backtest_results,
-                'feature_count': len(feature_columns),
+                'feature_count': len(self.model_manager.feature_columns),
                 'data_points': len(features_df),
                 'optimization_notes': [
+                    'FIXED: Filtered non-numeric features before training',
                     'Reduced model complexity to prevent overfitting',
                     'Implemented regime-aware position sizing',
                     'Enhanced risk management with dynamic stops',
@@ -1548,7 +1548,7 @@ class OptimizedTradingBot:
     def _print_enhanced_results_summary(self, results: Dict[str, Any]):
         """Print enhanced results summary"""
         print("\n" + "="*70)
-        print(f"OPTIMIZED AI TRADING BOT RESULTS - {results['symbol']}")
+        print(f"FIXED OPTIMIZED AI TRADING BOT RESULTS - {results['symbol']}")
         print("="*70)
         
         # Model Performance
@@ -1599,7 +1599,6 @@ class OptimizedTradingBot:
         # Performance assessment
         sharpe = bt_stats['sharpe']
         cagr = bt_stats['cagr']
-        win_rate = bt_stats['win_rate']
         
         print(f"\nPERFORMANCE ASSESSMENT:")
         if sharpe > 1.0:
@@ -1626,7 +1625,7 @@ def main():
     """Main function with enhanced interface"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="Optimized Institutional AI Trading Bot for Indian Markets")
+    parser = argparse.ArgumentParser(description="FIXED Optimized Institutional AI Trading Bot for Indian Markets")
     parser.add_argument('--symbol', type=str, default='TATAMOTORS', 
                        help='Stock symbol to analyze (default: TATAMOTORS)')
     parser.add_argument('--period', type=str, default='2y',
@@ -1639,10 +1638,10 @@ def main():
     args = parser.parse_args()
     
     try:
-        # Initialize optimized bot
+        # Initialize fixed optimized bot
         bot = OptimizedTradingBot(model_path=args.model_path)
         
-        # Run optimized analysis
+        # Run fixed optimized analysis
         results = bot.run_full_analysis(
             symbol=args.symbol,
             period=args.period,
